@@ -1,6 +1,0 @@
-{
-  "name": "Local Connect",
-  "description": "Serverless offline peer-to-peer text, voice, and video communication using QR code WebRTC signaling.",
-  "requestFramePermissions": ["camera", "microphone"],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
