@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Local Connect — Serverless Offline P2P</title>
+  <meta name="description" content="Serverless offline peer-to-peer text, voice, and video communication using QR code WebRTC signaling." />
+  <meta property="og:title" content="Local Connect" />
+  <meta property="og:description" content="Serverless offline peer-to-peer text, voice, and video communication using QR code WebRTC signaling." />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Application Bar -->
+    <header class="topbar">
+      <div class="topbar-brand">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M5 12.55a11 11 0 0 1 14.08 0" />
+          <path d="M1.42 9a16 16 0 0 1 21.16 0" />
+          <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+          <circle cx="12" cy="20" r="1" fill="currentColor" />
+        </svg>
+        <h1 class="brand-title">Local Connect</h1>
+      </div>
+
+      <div class="topbar-status" id="global-status-bar" aria-live="polite">
+        <span class="status-icon" id="global-status-icon" aria-hidden="true"></span>
+        <span class="status-text" id="global-status-text">Disconnected</span>
+      </div>
+
+      <div class="topbar-actions">
+        <button type="button" id="btn-reset-global" class="btn btn-ghost btn-sm" title="Reset connection and return to pairing">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+            <path d="M3 3v5h5" />
+          </svg>
+          <span>Reset</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Global Error / Notice Banner -->
+    <div id="alert-banner" class="alert-banner hidden" role="alert" aria-live="assertive">
+      <div class="alert-content">
+        <svg class="icon-sm alert-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" />
+          <line x1="12" y1="8" x2="12" y2="12" />
+          <line x1="12" y1="16" x2="12.01" y2="16" />
+        </svg>
+        <div class="alert-copy">
+          <strong id="alert-title">Notice</strong>
+          <p id="alert-message"></p>
+        </div>
+      </div>
+      <button type="button" id="btn-dismiss-alert" class="btn-icon-only" aria-label="Dismiss notice">
+        <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+    </div>
+
+    <!-- ============================================================
+         SECTION A: CONNECTION AND QR PAIRING SCREEN
+         ============================================================ -->
+    <main id="screen-connect" class="screen screen-connect active" aria-label="Connection and QR pairing">
+      <div class="connect-layout">
+        <!-- Left / Primary Controls & Identity -->
+        <section class="panel panel-controls">
+          <div class="panel-header">
+            <h2>Device Pairing</h2>
+            <p class="muted-line">
+              Serverless local Wi-Fi or hotspot link · DTLS-SRTP encrypted · Session-only memory
+            </p>
+          </div>
+
+          <div id="secure-context-notice" class="notice-box hidden" role="status">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <div>
+              <strong>Secure context required for camera &amp; microphone</strong>
+              <p>This page is not running on HTTPS or localhost. Browsers generally block camera QR scanning, voice calls, and video calls on plain HTTP LAN IPs or file:// URLs.</p>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label for="input-local-name" class="field-label">Your device name (session only)</label>
+            <input
+              type="text"
+              id="input-local-name"
+              class="text-input"
+              maxlength="24"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Device-0000"
+            />
+          </div>
+
+          <div class="action-grid">
+            <button type="button" id="btn-create-connection" class="btn btn-primary btn-lg">
+              <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="3" width="7" height="7" />
+                <rect x="14" y="3" width="7" height="7" />
+                <rect x="3" y="14" width="7" height="7" />
+                <path d="M14 14h3v3h-3z" />
+                <path d="M17 17h4v4h-4z" />
+                <path d="M14 21h1" />
+                <path d="M21 14v1" />
+              </svg>
+              <span>Create Connection</span>
+            </button>
+
+            <button type="button" id="btn-scan-qr" class="btn btn-secondary btn-lg">
+              <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+                <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+                <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+                <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+                <line x1="7" y1="12" x2="17" y2="12" />
+              </svg>
+              <span>Scan QR Code</span>
+            </button>
+          </div>
+
+          <div class="status-card" id="pairing-status-box">
+            <div class="status-row">
+              <span class="status-label">Connection state</span>
+              <span class="status-value" id="connect-state-label">Ready to pair</span>
+            </div>
+            <div class="status-row">
+              <span class="status-label">Session ID</span>
+              <span class="status-value mono" id="connect-session-id">—</span>
+            </div>
+            <div class="status-row">
+              <span class="status-label">ICE candidates</span>
+              <span class="status-value mono" id="connect-ice-summary">None gathered</span>
+            </div>
+          </div>
+
+          <div class="instructions-block">
+            <h3>How to pair two devices</h3>
+            <ol class="steps-list">
+              <li>Connect both devices to the same Wi-Fi network or mobile hotspot.</li>
+              <li><strong>Device A</strong> taps <em>Create Connection</em> to gather local network ICE candidates and show an Offer QR code.</li>
+              <li><strong>Device B</strong> taps <em>Scan QR Code</em>, scans Device A's QR code(s), and automatically displays an Answer QR code.</li>
+              <li><strong>Device A</strong> taps <em>Scan QR Code</em> to scan Device B's Answer QR code(s) and establish the direct link.</li>
+            </ol>
+            <p class="network-note">
+              Note: Some public Wi-Fi routers and phone hotspots enable client isolation, which blocks direct peer-to-peer connections between devices.
+            </p>
+          </div>
+        </section>
+
+        <!-- Right / Dynamic QR Display & Camera Scanner Stage -->
+        <section class="panel panel-stage" id="qr-stage-panel">
+          <!-- Idle Stage -->
+          <div id="stage-idle" class="stage-view active">
+            <div class="empty-stage">
+              <svg class="empty-stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="3" width="7" height="7" rx="1" />
+                <rect x="14" y="3" width="7" height="7" rx="1" />
+                <rect x="3" y="14" width="7" height="7" rx="1" />
+                <path d="M14 14h3v3h-3z" />
+                <path d="M18 14h3" />
+                <path d="M14 21h7" />
+                <path d="M21 17v4" />
+              </svg>
+              <h3>QR Pairing Workspace</h3>
+              <p>Select <strong>Create Connection</strong> on the initiating device or <strong>Scan QR Code</strong> on the receiving device.</p>
+            </div>
+          </div>
+
+          <!-- Gathering / Processing Stage -->
+          <div id="stage-loading" class="stage-view">
+            <div class="empty-stage">
+              <div class="spinner" aria-hidden="true"></div>
+              <h3 id="loading-title">Preparing WebRTC connection…</h3>
+              <p id="loading-subtitle">Collecting local-network ICE candidates without external servers.</p>
+            </div>
+          </div>
+
+          <!-- Generated QR Display Stage -->
+          <div id="stage-qr-display" class="stage-view">
+            <div class="stage-header">
+              <div>
+                <h3 id="qr-display-title">Connection Offer QR</h3>
+                <p class="muted-line" id="qr-display-subtitle">Have the other device scan this QR code.</p>
+              </div>
+              <span class="chunk-counter mono" id="qr-chunk-counter">Part 1 of 1</span>
+            </div>
+
+            <div class="qr-frame-outer">
+              <div class="qr-canvas-wrap">
+                <canvas id="qr-output-canvas" aria-label="Generated WebRTC pairing QR code"></canvas>
+              </div>
+            </div>
+
+            <div id="qr-pagination" class="qr-pagination hidden">
+              <button type="button" id="btn-qr-prev" class="btn btn-secondary btn-sm">Previous</button>
+              <button type="button" id="btn-qr-autocycle" class="btn btn-ghost btn-sm" aria-pressed="false">Auto-cycle: Off</button>
+              <button type="button" id="btn-qr-next" class="btn btn-secondary btn-sm">Next</button>
+            </div>
+
+            <div class="stage-footer-actions">
+              <button type="button" id="btn-scan-answer" class="btn btn-primary btn-full hidden">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+                  <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+                  <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+                  <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+                  <line x1="7" y1="12" x2="17" y2="12" />
+                </svg>
+                <span>Scan Device B's Answer QR</span>
+              </button>
+              <button type="button" id="btn-cancel-offer" class="btn btn-ghost btn-full">Cancel Pairing</button>
+            </div>
+          </div>
+
+          <!-- Camera QR Scanner Stage -->
+          <div id="stage-qr-scanner" class="stage-view">
+            <div class="stage-header">
+              <div>
+                <h3 id="scanner-title">Scan Pairing QR</h3>
+                <p class="muted-line" id="scanner-subtitle">Align the QR code inside the frame.</p>
+              </div>
+              <span class="chunk-counter mono" id="scanner-progress">Waiting…</span>
+            </div>
+
+            <div class="scanner-viewport">
+              <video id="qr-scanner-video" autoplay playsinline muted></video>
+              <div class="scanner-reticle" aria-hidden="true">
+                <span class="reticle-corner tl"></span>
+                <span class="reticle-corner tr"></span>
+                <span class="reticle-corner bl"></span>
+                <span class="reticle-corner br"></span>
+              </div>
+            </div>
+
+            <div id="scanner-chunk-dots" class="scanner-chunk-list hidden" aria-live="polite"></div>
+
+            <div class="scanner-controls">
+              <button type="button" id="btn-switch-scanner-cam" class="btn btn-secondary btn-sm hidden">Switch Camera</button>
+              <button type="button" id="btn-stop-scanner" class="btn btn-ghost btn-sm">Close Scanner</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- ============================================================
+         SECTION B: TEXT MESSAGING SCREEN
+         ============================================================ -->
+    <main id="screen-chat" class="screen screen-chat" aria-label="Text messaging">
+      <div class="chat-container">
+        <!-- Chat Header -->
+        <div class="chat-header">
+          <div class="peer-meta">
+            <div class="peer-avatar" id="chat-peer-avatar" aria-hidden="true">P</div>
+            <div class="peer-details">
+              <h2 class="peer-name" id="chat-peer-name">Connected Peer</h2>
+              <p class="peer-subline" id="chat-connection-indicator">
+                <span class="dot-indicator" id="chat-status-dot" aria-hidden="true"></span>
+                <span id="chat-status-text">Connected · Direct P2P</span>
+              </p>
+            </div>
+          </div>
+
+          <div class="chat-call-actions">
+            <button type="button" id="btn-start-voice" class="btn btn-secondary btn-icon-label" title="Start voice call">
+              <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
+              </svg>
+              <span>Voice</span>
+            </button>
+
+            <button type="button" id="btn-start-video" class="btn btn-primary btn-icon-label" title="Start video call">
+              <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polygon points="23 7 16 12 23 17 23 7" />
+                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+              </svg>
+              <span>Video</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Message History -->
+        <div id="chat-messages" class="chat-messages" role="log" aria-live="polite" aria-label="Session messages">
+          <div id="chat-empty-state" class="chat-empty-state">
+            <p class="empty-title">Connected Successfully</p>
+            <p class="empty-desc">
+              Messages travel directly over an encrypted WebRTC DataChannel with no server or database. History clears automatically when this tab closes.
+            </p>
+          </div>
+        </div>
+
+        <!-- Chat Input Bar -->
+        <form id="chat-form" class="chat-composer" autocomplete="off">
+          <label for="input-chat-message" class="sr-only">Type a message</label>
+          <input
+            type="text"
+            id="input-chat-message"
+            class="chat-input"
+            maxlength="4000"
+            placeholder="Message peer…"
+          />
+          <button type="submit" id="btn-send-message" class="btn btn-primary btn-send" aria-label="Send message">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="22" y1="2" x2="11" y2="13" />
+              <polygon points="22 2 15 22 11 13 2 9 22 2" />
+            </svg>
+            <span class="send-label">Send</span>
+          </button>
+        </form>
+      </div>
+    </main>
+
+    <!-- ============================================================
+         SECTION C: VOICE / VIDEO CALLING SCREEN
+         ============================================================ -->
+    <main id="screen-call" class="screen screen-call" aria-label="Voice and video calling">
+      <div class="call-stage">
+        <!-- Remote Video Display -->
+        <video id="remote-video" class="remote-video" autoplay playsinline></video>
+
+        <!-- Voice-Only / Video-Off Placeholder Overlay -->
+        <div id="call-audio-placeholder" class="call-audio-placeholder">
+          <div class="call-avatar" id="call-peer-avatar" aria-hidden="true">P</div>
+          <h2 id="call-peer-name">Peer</h2>
+          <p id="call-status-text" class="call-status-text">Calling…</p>
+          <p id="call-duration" class="call-duration mono">00:00</p>
+        </div>
+
+        <!-- Call Top Info Strip (when video is active) -->
+        <div class="call-hud-top" id="call-hud-top">
+          <div class="call-hud-info">
+            <span id="call-hud-name" class="call-hud-name">Peer</span>
+            <span aria-hidden="true">·</span>
+            <span id="call-hud-state" class="call-hud-state">Connecting…</span>
+            <span aria-hidden="true">·</span>
+            <span id="call-hud-timer" class="call-hud-timer mono">00:00</span>
+          </div>
+        </div>
+
+        <!-- Local Video Preview -->
+        <div id="local-video-wrap" class="local-video-wrap hidden">
+          <video id="local-video" class="local-video" autoplay playsinline muted></video>
+        </div>
+
+        <!-- Bottom Touch Control Dock -->
+        <div class="call-controls" role="toolbar" aria-label="Call controls">
+          <button type="button" id="btn-toggle-mic" class="call-btn" aria-pressed="false" aria-label="Mute microphone" title="Mute / Unmute microphone">
+            <svg id="icon-mic-on" class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+              <line x1="8" y1="23" x2="16" y2="23" />
+            </svg>
+            <svg id="icon-mic-off" class="icon-lg hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="1" y1="1" x2="23" y2="23" />
+              <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+              <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+              <line x1="8" y1="23" x2="16" y2="23" />
+            </svg>
+            <span class="call-btn-label" id="label-mic">Mute</span>
+          </button>
+
+          <button type="button" id="btn-toggle-cam" class="call-btn hidden" aria-pressed="false" aria-label="Turn camera off" title="Camera On / Off">
+            <svg id="icon-cam-on" class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polygon points="23 7 16 12 23 17 23 7" />
+              <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+            </svg>
+            <svg id="icon-cam-off" class="icon-lg hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10" />
+              <line x1="1" y1="1" x2="23" y2="23" />
+            </svg>
+            <span class="call-btn-label" id="label-cam">Camera</span>
+          </button>
+
+          <button type="button" id="btn-switch-call-cam" class="call-btn hidden" aria-label="Switch front or rear camera" title="Switch front / rear camera">
+            <svg class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M11 19H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
+              <path d="M13 5h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5" />
+              <circle cx="12" cy="12" r="3" />
+              <path d="m18 22-3-3 3-3" />
+              <path d="m6 2 3 3-3 3" />
+            </svg>
+            <span class="call-btn-label">Flip</span>
+          </button>
+
+          <button type="button" id="btn-end-call" class="call-btn call-btn-danger" aria-label="End call" title="End call">
+            <svg class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91" />
+              <line x1="23" y1="1" x2="1" y2="23" />
+            </svg>
+            <span class="call-btn-label">End</span>
+          </button>
+        </div>
+      </div>
+    </main>
+
+    <!-- Incoming Call Modal Overlay (within SPA) -->
+    <div id="incoming-call-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="incoming-call-title">
+      <div class="modal-card">
+        <p class="modal-kicker" id="incoming-call-type">Incoming Voice Call</p>
+        <h2 id="incoming-call-title" class="modal-title">Peer is calling…</h2>
+        <p class="modal-subtitle">Media is encrypted peer-to-peer with DTLS-SRTP.</p>
+        <div class="modal-actions">
+          <button type="button" id="btn-reject-call" class="btn btn-danger btn-lg">Reject</button>
+          <button type="button" id="btn-accept-call" class="btn btn-success btn-lg">Accept</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Locally bundled offline libraries (Zero CDN, Zero external requests) -->
+  <script src="libs/qrcode-generator.js"></script>
+  <script src="libs/qr-scanner.js"></script>
+  <script src="qr.js"></script>
+  <script src="webrtc.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
