@@ -81,7 +81,7 @@
       } else if (iceState === 'connected' || iceState === 'completed') {
         self._checkFullyConnected();
       } else if (iceState === 'failed') {
-        self._handleConnectionFailure(self._buildFailureDiagnostics('ICE connectivity check failed.'));
+        self._handleConnectionFailure('ICE connectivity check failed.');
       } else if (iceState === 'disconnected') {
         self._emitState('Connection interrupted…');
       }
@@ -95,7 +95,7 @@
       } else if (st === 'connected') {
         self._checkFullyConnected();
       } else if (st === 'failed') {
-        self._handleConnectionFailure(self._buildFailureDiagnostics('WebRTC connection failed.'));
+        self._handleConnectionFailure('WebRTC connection failed.');
       } else if (st === 'closed') {
         self._handleDisconnected('Connection closed.');
       }
@@ -259,7 +259,27 @@
     return stats;
   };
 
-  LocalConnectRTC.prototype._buildFailureDiagnostics = function (prefix) {
+  LocalConnectRTC.prototype._collectFailureStats = async function () {
+    if (!this.pc || typeof this.pc.getStats !== 'function') return null;
+    try {
+      var report = await this.pc.getStats();
+      var summary = { pairs: 0, requestsSent: 0, responsesReceived: 0, requestsReceived: 0, bytesReceived: 0 };
+      report.forEach(function (stat) {
+        if (stat.type === 'candidate-pair') {
+          summary.pairs++;
+          summary.requestsSent += stat.requestsSent || 0;
+          summary.responsesReceived += stat.responsesReceived || 0;
+          summary.requestsReceived += stat.requestsReceived || 0;
+          summary.bytesReceived += stat.bytesReceived || 0;
+        }
+      });
+      return summary;
+    } catch (_e) {
+      return null;
+    }
+  };
+
+  LocalConnectRTC.prototype._buildFailureDiagnostics = function (prefix, rtcStats) {
     var local = this.localIceStats;
     var remote = this.remoteIceStats;
 
@@ -268,16 +288,32 @@
         return prefix + ' Browser hid direct LAN IPv4 addresses behind mDNS (.local), which failed to resolve across devices. Grant camera permission on both devices and retry, or check if mDNS (UDP 5353) is blocked.';
       }
       if (local.ipv4List.length > 0 && remote.ipv4List.length > 0) {
-        var shareSubnet = local.ipv4List.some(function (a) {
+        var matchingPairs = [];
+        local.ipv4List.forEach(function (a) {
           var prefixA = a.split('.').slice(0, 3).join('.');
-          return remote.ipv4List.some(function (b) {
-            return b.split('.').slice(0, 3).join('.') === prefixA;
+          remote.ipv4List.forEach(function (b) {
+            if (b.split('.').slice(0, 3).join('.') === prefixA) {
+              matchingPairs.push(a + ' ↔ ' + b);
+            }
           });
         });
-        if (!shareSubnet) {
-          return prefix + ' Devices reported non-matching local subnets (' + local.ipv4List[0] + ' vs ' + remote.ipv4List[0] + '). Ensure both are on the same Wi-Fi/hotspot and disable VPNs.';
+
+        var localAll = local.ipv4List.join(', ');
+        var remoteAll = remote.ipv4List.join(', ');
+
+        if (matchingPairs.length === 0) {
+          return prefix + ' Devices reported non-matching local subnets (Local: ' + localAll + ' vs Peer: ' + remoteAll + '). Ensure both are on the same Wi-Fi/hotspot and disable VPNs or mobile data.';
         }
-        return prefix + ' Both devices exchanged local LAN IPs (' + local.ipv4List[0] + ' ↔ ' + remote.ipv4List[0] + '), so UDP traffic was blocked by a firewall (e.g. Windows Public Network Firewall) or Wi-Fi router AP/client isolation.';
+
+        var statHint = rtcStats
+          ? ' [STUN sent: ' + rtcStats.requestsSent + ', received: ' + (rtcStats.responsesReceived + rtcStats.requestsReceived) + ']'
+          : '';
+
+        if (this.isPolite && rtcStats && rtcStats.responsesReceived === 0 && rtcStats.requestsReceived === 0) {
+          return prefix + ' No response arrived from ' + this.remoteName + ' (' + matchingPairs[0] + ')' + statHint + '. Either Device A took too long to scan the Answer QR, or direct P2P packets are blocked by Windows Public Network Firewall or Wi-Fi AP/Client Isolation. Try: (1) On Windows, set Wi-Fi profile to Private or allow your browser in Windows Firewall; (2) Swap which device creates vs scans the QR; (3) Disable router AP/client isolation.';
+        }
+
+        return prefix + ' Direct P2P packets between ' + matchingPairs[0] + statHint + ' received no reply. Blocked by firewall (e.g. Windows Public Network Firewall blocking Chrome/Edge inbound UDP) or Wi-Fi router AP/Client Isolation. Fix: Set Windows Wi-Fi to Private & allow browser in Windows Defender Firewall, swap which device initiates, or use a network/hotspot without client isolation.';
       }
     }
 
@@ -482,9 +518,7 @@
     var self = this;
     this.connectTimer = setTimeout(function () {
       if (!self.connectedNotified) {
-        self._handleConnectionFailure(
-          self._buildFailureDiagnostics('WebRTC connection timed out.')
-        );
+        self._handleConnectionFailure('WebRTC connection timed out.');
       }
     }, CONNECT_TIMEOUT_MS);
   };
@@ -1015,10 +1049,14 @@
     if (this.cb.onError) this.cb.onError(message);
   };
 
-  LocalConnectRTC.prototype._handleConnectionFailure = function (message) {
+  LocalConnectRTC.prototype._handleConnectionFailure = async function (prefix) {
+    if (this._handlingFailure) return;
+    this._handlingFailure = true;
     this._clearConnectTimeout();
     this._stopHeartbeat();
     var wasConnected = this.connectedNotified;
+    var rtcStats = await this._collectFailureStats();
+    var message = this._buildFailureDiagnostics(prefix || 'WebRTC connection failed.', rtcStats);
     this.reset();
     if (this.cb.onFailed) {
       this.cb.onFailed(message, wasConnected);
@@ -1065,6 +1103,7 @@
     }
 
     this.connectedNotified = false;
+    this._handlingFailure = false;
     this.localIceStats = null;
     this.remoteIceStats = null;
     this.makingOffer = false;
