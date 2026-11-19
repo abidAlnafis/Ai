@@ -9,7 +9,7 @@
   'use strict';
 
   var ICE_GATHER_TIMEOUT_MS = 6500;
-  var CONNECT_TIMEOUT_MS = 18000;
+  var CONNECT_TIMEOUT_MS = 25000;
   var HEARTBEAT_INTERVAL_MS = 4000;
   var HEARTBEAT_TIMEOUT_MS = 13000;
   var MAX_CHAT_TEXT_BYTES = 8192;
@@ -33,6 +33,8 @@
     this.connectTimer = null;
     this.heartbeatTimer = null;
     this.lastPongTs = 0;
+    this.localIceStats = null;
+    this.remoteIceStats = null;
 
     // Active call state: 'idle' | 'outgoing' | 'incoming' | 'connecting' | 'active'
     this.callState = 'idle';
@@ -72,10 +74,15 @@
     var self = this;
 
     pc.oniceconnectionstatechange = function () {
-      self._emitState('ICE: ' + pc.iceConnectionState);
-      if (pc.iceConnectionState === 'failed') {
-        self._handleConnectionFailure('No common local network route found (ICE failed). Some routers or hotspots isolate devices from one another.');
-      } else if (pc.iceConnectionState === 'disconnected') {
+      var iceState = pc.iceConnectionState;
+      self._emitState('ICE: ' + iceState);
+      if (iceState === 'checking' && !self.connectedNotified && !self.connectTimer) {
+        self._startConnectTimeout();
+      } else if (iceState === 'connected' || iceState === 'completed') {
+        self._checkFullyConnected();
+      } else if (iceState === 'failed') {
+        self._handleConnectionFailure(self._buildFailureDiagnostics('ICE connectivity check failed.'));
+      } else if (iceState === 'disconnected') {
         self._emitState('Connection interrupted…');
       }
     };
@@ -83,10 +90,12 @@
     pc.onconnectionstatechange = function () {
       var st = pc.connectionState;
       self._emitState('Peer: ' + st);
-      if (st === 'connected') {
+      if (st === 'connecting' && !self.connectedNotified && !self.connectTimer) {
+        self._startConnectTimeout();
+      } else if (st === 'connected') {
         self._checkFullyConnected();
       } else if (st === 'failed') {
-        self._handleConnectionFailure('WebRTC connection failed. Devices must share the same local Wi-Fi/hotspot without client isolation or blocking firewalls.');
+        self._handleConnectionFailure(self._buildFailureDiagnostics('WebRTC connection failed.'));
       } else if (st === 'closed') {
         self._handleDisconnected('Connection closed.');
       }
@@ -126,7 +135,6 @@
 
     pc.ontrack = function (event) {
       var track = event.track;
-      // Avoid duplicates
       var existing = self.remoteStream.getTracks().some(function (t) { return t.id === track.id; });
       if (!existing) {
         self.remoteStream.addTrack(track);
@@ -169,13 +177,13 @@
   };
 
   LocalConnectRTC.prototype._checkFullyConnected = function () {
-    if (this.connectedNotified) return;
-    if (
-      this.pc &&
-      this.pc.connectionState === 'connected' &&
-      this.dc &&
-      this.dc.readyState === 'open'
-    ) {
+    if (this.connectedNotified || !this.pc) return;
+    var transportReady =
+      this.pc.connectionState === 'connected' ||
+      (this.pc.connectionState === undefined &&
+        (this.pc.iceConnectionState === 'connected' || this.pc.iceConnectionState === 'completed'));
+
+    if (transportReady && this.dc && this.dc.readyState === 'open') {
       this.connectedNotified = true;
       this._clearConnectTimeout();
       if (this.cb.onConnected) {
@@ -187,68 +195,153 @@
     }
   };
 
-  LocalConnectRTC.prototype._gatherCompleteIce = function (pc) {
-    return new Promise(function (resolve) {
-      var collected = [];
-      var seen = new Set();
-      var stats = { host: 0, mdns: 0, other: 0, total: 0 };
-      var finished = false;
+  // Browsers obfuscate local LAN IPs into mDNS ".local" candidates until getUserMedia
+  // permission has been granted on this origin. Probing camera/mic on Device A reveals
+  // real local IPv4 host candidates (e.g. 192.168.x.x), avoiding cross-device mDNS failures.
+  LocalConnectRTC.prototype._unlockLocalIpDiscovery = async function () {
+    if (!global.isSecureContext || !navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      return;
+    }
+    var attempts = [{ video: true, audio: false }, { audio: true, video: false }];
+    for (var i = 0; i < attempts.length; i++) {
+      try {
+        var stream = await navigator.mediaDevices.getUserMedia(attempts[i]);
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        return;
+      } catch (_err) {
+        // Continue to next fallback or proceed with mDNS if denied/unavailable
+      }
+    }
+  };
 
-      function recordCandidate(cand) {
-        if (!cand || !cand.candidate) return;
-        if (seen.has(cand.candidate)) return;
-        seen.add(cand.candidate);
+  LocalConnectRTC.prototype._analyzeSdpAndCandidates = function (sdp, extraCandidates) {
+    var stats = { host: 0, hostIpv4: 0, hostIpv6: 0, mdns: 0, other: 0, total: 0, ipv4List: [] };
+    var seen = new Set();
 
-        var serialized = {
-          candidate: cand.candidate,
-          sdpMid: cand.sdpMid || null,
-          sdpMLineIndex: typeof cand.sdpMLineIndex === 'number' ? cand.sdpMLineIndex : null
-        };
-        collected.push(serialized);
+    function inspectLine(candLine) {
+      if (!candLine) return;
+      var normalized = candLine.replace(/^a=/, '').trim();
+      if (normalized.indexOf('candidate:') !== 0 || seen.has(normalized)) return;
+      seen.add(normalized);
 
-        stats.total++;
-        if (cand.candidate.indexOf(' typ host') !== -1) {
-          if (cand.candidate.indexOf('.local ') !== -1) {
-            stats.mdns++;
-          } else {
-            stats.host++;
-          }
+      var parts = normalized.split(/\s+/);
+      var ip = parts[4] || '';
+      var typeIdx = parts.indexOf('typ');
+      var candType = typeIdx !== -1 ? parts[typeIdx + 1] : '';
+
+      stats.total++;
+      if (candType === 'host') {
+        if (ip.indexOf('.local') !== -1) {
+          stats.mdns++;
+        } else if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
+          stats.host++;
+          stats.hostIpv4++;
+          if (stats.ipv4List.indexOf(ip) === -1) stats.ipv4List.push(ip);
         } else {
-          stats.other++;
+          stats.host++;
+          stats.hostIpv6++;
         }
+      } else {
+        stats.other++;
       }
+    }
 
-      var prevOnIce = pc.onicecandidate;
-      var timeoutId = setTimeout(finish, ICE_GATHER_TIMEOUT_MS);
+    if (typeof sdp === 'string') {
+      sdp.split(/\r?\n/).forEach(function (line) {
+        if (line.indexOf('a=candidate:') === 0) inspectLine(line);
+      });
+    }
+    if (Array.isArray(extraCandidates)) {
+      extraCandidates.forEach(function (c) {
+        if (c && c.candidate) inspectLine(c.candidate);
+      });
+    }
+    return stats;
+  };
 
-      function finish() {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timeoutId);
-        pc.removeEventListener('icegatheringstatechange', onStateChange);
-        pc.onicecandidate = prevOnIce;
-        resolve({ candidates: collected, stats: stats });
+  LocalConnectRTC.prototype._buildFailureDiagnostics = function (prefix) {
+    var local = this.localIceStats;
+    var remote = this.remoteIceStats;
+
+    if (local && remote) {
+      if ((local.hostIpv4 === 0 && local.mdns > 0) || (remote.hostIpv4 === 0 && remote.mdns > 0)) {
+        return prefix + ' Browser hid direct LAN IPv4 addresses behind mDNS (.local), which failed to resolve across devices. Grant camera permission on both devices and retry, or check if mDNS (UDP 5353) is blocked.';
       }
-
-      function onStateChange() {
-        if (pc.iceGatheringState === 'complete') {
-          finish();
+      if (local.ipv4List.length > 0 && remote.ipv4List.length > 0) {
+        var shareSubnet = local.ipv4List.some(function (a) {
+          var prefixA = a.split('.').slice(0, 3).join('.');
+          return remote.ipv4List.some(function (b) {
+            return b.split('.').slice(0, 3).join('.') === prefixA;
+          });
+        });
+        if (!shareSubnet) {
+          return prefix + ' Devices reported non-matching local subnets (' + local.ipv4List[0] + ' vs ' + remote.ipv4List[0] + '). Ensure both are on the same Wi-Fi/hotspot and disable VPNs.';
         }
+        return prefix + ' Both devices exchanged local LAN IPs (' + local.ipv4List[0] + ' ↔ ' + remote.ipv4List[0] + '), so UDP traffic was blocked by a firewall (e.g. Windows Public Network Firewall) or Wi-Fi router AP/client isolation.';
       }
+    }
 
-      pc.addEventListener('icegatheringstatechange', onStateChange);
-      pc.onicecandidate = function (ev) {
-        if (ev.candidate) {
-          recordCandidate(ev.candidate);
-        } else {
-          finish();
-        }
-      };
+    return prefix + ' Devices must share the same local Wi-Fi or hotspot without AP/client isolation or blocking firewalls.';
+  };
 
+  // Attach ICE listeners BEFORE calling setLocalDescription so no early candidates are missed
+  LocalConnectRTC.prototype._prepareIceGathering = function (pc) {
+    var collected = [];
+    var seen = new Set();
+    var finished = false;
+    var resolveFn = null;
+    var prevOnIce = pc.onicecandidate;
+    var timeoutId = null;
+
+    var promise = new Promise(function (resolve) {
+      resolveFn = resolve;
+    });
+
+    function recordCandidate(cand) {
+      if (!cand || !cand.candidate) return;
+      if (seen.has(cand.candidate)) return;
+      seen.add(cand.candidate);
+      collected.push({
+        candidate: cand.candidate,
+        sdpMid: cand.sdpMid || null,
+        sdpMLineIndex: typeof cand.sdpMLineIndex === 'number' ? cand.sdpMLineIndex : null
+      });
+    }
+
+    function finish() {
+      if (finished) return;
+      finished = true;
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      pc.removeEventListener('icegatheringstatechange', onStateChange);
+      pc.onicecandidate = prevOnIce;
+      resolveFn(collected);
+    }
+
+    function onStateChange() {
       if (pc.iceGatheringState === 'complete') {
         finish();
       }
-    });
+    }
+
+    pc.addEventListener('icegatheringstatechange', onStateChange);
+    pc.onicecandidate = function (ev) {
+      if (ev.candidate) {
+        recordCandidate(ev.candidate);
+      } else {
+        finish();
+      }
+    };
+
+    return {
+      wait: function () {
+        if (pc.iceGatheringState === 'complete') {
+          finish();
+        } else {
+          timeoutId = setTimeout(finish, ICE_GATHER_TIMEOUT_MS);
+        }
+        return promise;
+      }
+    };
   };
 
   // STEP 1 & 2 (Device A): Create Offer + Complete ICE Gathering
@@ -258,25 +351,30 @@
     this.sessionId = sessionId;
     this.isPolite = false;
 
+    await this._unlockLocalIpDiscovery();
+
     var pc = this.createPeerConnection();
     var dc = pc.createDataChannel('local-connect', { ordered: true });
     this._attachDataChannel(dc);
 
+    var gatherer = this._prepareIceGathering(pc);
     var offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    var gathered = await this._gatherCompleteIce(pc);
-    if (gathered.stats.total === 0) {
+    var collected = await gatherer.wait();
+    var localSdp = pc.localDescription.sdp;
+    var extraIce = collected.filter(function (c) {
+      return localSdp.indexOf(c.candidate) === -1;
+    });
+
+    var stats = this._analyzeSdpAndCandidates(localSdp, extraIce);
+    this.localIceStats = stats;
+
+    if (stats.total === 0) {
       throw new Error(
         'ICE gathering produced 0 local candidates. Verify Wi-Fi or hotspot is connected and browser local-network access is permitted.'
       );
     }
-
-    // Filter out candidates already embedded in localDescription.sdp to prevent bloat while ensuring completeness
-    var localSdp = pc.localDescription.sdp;
-    var extraIce = gathered.candidates.filter(function (c) {
-      return localSdp.indexOf(c.candidate) === -1;
-    });
 
     return {
       payload: {
@@ -287,7 +385,7 @@
         sdp: localSdp,
         ice: extraIce
       },
-      stats: gathered.stats
+      stats: stats
     };
   };
 
@@ -298,6 +396,7 @@
     this.sessionId = offerPayload.sid;
     this.remoteName = offerPayload.peer || 'Device-A';
     this.isPolite = true;
+    this.remoteIceStats = this._analyzeSdpAndCandidates(offerPayload.sdp, offerPayload.ice);
 
     var self = this;
     var pc = this.createPeerConnection();
@@ -312,27 +411,32 @@
       try {
         await pc.addIceCandidate(offerPayload.ice[i]);
       } catch (_candErr) {
-        // Ignore malformed/unsupported candidate family (e.g. IPv6 link-local on IPv4-only interface)
+        // Ignore unsupported candidate family
       }
     }
+    try { await pc.addIceCandidate(null); } catch (_endErr) {}
 
+    var gatherer = this._prepareIceGathering(pc);
     var answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
-    var gathered = await this._gatherCompleteIce(pc);
-    if (gathered.stats.total === 0) {
+    var collected = await gatherer.wait();
+    var localSdp = pc.localDescription.sdp;
+    var extraIce = collected.filter(function (c) {
+      return localSdp.indexOf(c.candidate) === -1;
+    });
+
+    var stats = this._analyzeSdpAndCandidates(localSdp, extraIce);
+    this.localIceStats = stats;
+
+    if (stats.total === 0) {
       throw new Error(
         'ICE gathering produced 0 local candidates on this device. Verify Wi-Fi or hotspot is active.'
       );
     }
 
-    var localSdp = pc.localDescription.sdp;
-    var extraIce = gathered.candidates.filter(function (c) {
-      return localSdp.indexOf(c.candidate) === -1;
-    });
-
-    this._startConnectTimeout();
-
+    // Do NOT start connect timeout yet on Device B: wait until Device A scans Answer QR
+    // and ICE/DTLS checks actually begin (handled in statechange listeners).
     return {
       payload: {
         v: 1,
@@ -342,7 +446,7 @@
         sdp: localSdp,
         ice: extraIce
       },
-      stats: gathered.stats
+      stats: stats
     };
   };
 
@@ -356,6 +460,8 @@
     }
 
     this.remoteName = answerPayload.peer || 'Device-B';
+    this.remoteIceStats = this._analyzeSdpAndCandidates(answerPayload.sdp, answerPayload.ice);
+
     await this.pc.setRemoteDescription({ type: 'answer', sdp: answerPayload.sdp });
 
     for (var i = 0; i < answerPayload.ice.length; i++) {
@@ -365,6 +471,7 @@
         // Non-fatal candidate skip
       }
     }
+    try { await this.pc.addIceCandidate(null); } catch (_endErr) {}
 
     this._startConnectTimeout();
     this._checkFullyConnected();
@@ -376,7 +483,7 @@
     this.connectTimer = setTimeout(function () {
       if (!self.connectedNotified) {
         self._handleConnectionFailure(
-          'WebRTC connection timed out. Both devices must be on the same Wi-Fi/hotspot, and the router must not isolate clients or block peer-to-peer UDP.'
+          self._buildFailureDiagnostics('WebRTC connection timed out.')
         );
       }
     }, CONNECT_TIMEOUT_MS);
@@ -958,6 +1065,8 @@
     }
 
     this.connectedNotified = false;
+    this.localIceStats = null;
+    this.remoteIceStats = null;
     this.makingOffer = false;
     this.ignoreOffer = false;
     this.isSettingRemoteAnswerPending = false;

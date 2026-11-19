@@ -589,7 +589,11 @@
   function formatIceStats(stats) {
     if (!stats) return 'None';
     var parts = [];
-    if (stats.host > 0) parts.push(stats.host + ' host');
+    if (stats.ipv4List && stats.ipv4List.length > 0) {
+      parts.push(stats.ipv4List.join(', ') + ' (LAN)');
+    } else if (stats.host > 0) {
+      parts.push(stats.host + ' host');
+    }
     if (stats.mdns > 0) parts.push(stats.mdns + ' mDNS');
     if (stats.other > 0) parts.push(stats.other + ' other');
     return parts.length > 0 ? parts.join(' · ') : '0 candidates';

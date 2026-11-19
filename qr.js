@@ -9,7 +9,7 @@
   var PROTOCOL_PREFIX = 'LC1';
   var MAX_PAYLOAD_BYTES = 32768;
   var MAX_CHUNKS = 64;
-  var CHUNK_DATA_LENGTH = 360;
+  var CHUNK_DATA_LENGTH = 560;
 
   // Build CRC32 lookup table once
   var CRC_TABLE = (function () {
@@ -333,12 +333,12 @@
     }
 
     var qr;
+    var primaryLevel = text.length > 400 ? 'L' : 'M';
     try {
-      qr = global.qrcode(0, 'M');
+      qr = global.qrcode(0, primaryLevel);
       qr.addData(text, 'Byte');
       qr.make();
-    } catch (_errM) {
-      // Fall back to Error Correction 'L' if 'M' overflows for dense chunks
+    } catch (_errPrimary) {
       qr = global.qrcode(0, 'L');
       qr.addData(text, 'Byte');
       qr.make();
